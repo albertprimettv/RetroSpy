@@ -72,7 +72,7 @@ int main(int argc, char **argv)
 	uint8_t axmap[AXMAP_SIZE];
 	int btnmapok = 1;
 
-	if ((fd = open(argv[argc - 1], O_RDONLY)) < 0) {
+	if ((fd = open(argv[argc - 1], O_NONBLOCK | O_RDONLY)) < 0) {
 		perror("jstest");
 		return 1;
 	}
@@ -114,76 +114,54 @@ int main(int argc, char **argv)
 		puts(").");
 	}
 
-	close(fd);
-
-	int *axis;
-	char *button;
-	int k = 0;
 	struct js_event js;
 
-	axis = calloc(axes, sizeof(int));
-	button = calloc(buttons, sizeof(char));
+	// 8 bits each for num axes and buttons
+	// 1 bit for each button state
+	// 32 bits for each axis
+	int bufSize = sizeof(char) * (8 + 8 + buttons + axes * 32);
+
+	char *outputBuf = calloc(sizeof(char), bufSize + 1);
+	memset(outputBuf, '0', bufSize);
+
+	char *currPos = outputBuf;
+	// encode num axes and buttons in one byte each, LSB first
+	for (i = 0; i < 8; ++currPos, ++i) {
+		*currPos = '0' + ((axes & (1 << i)) != 0);
+	}
+
+	for (i = 0; i < 8; ++currPos, ++i) {
+		*currPos = '0' + ((buttons & (1 << i)) != 0);
+	}
+
+	printf("%s\n", outputBuf);
+
+	currPos = NULL;
+
+	char *buttonsPtr = outputBuf + 8 + 8;
+	char *axesPtr = buttonsPtr + buttons;
 
 	while (1) {
-		if ((fd = open(argv[argc - 1], O_RDONLY)) < 0) {
-			perror("jstest");
-			return 1;
-		}
-		k = 0;
-
-		while (k < axes + buttons)
-		{
-			if (read(fd, &js, sizeof(struct js_event)) 
-				!= sizeof(struct js_event)) 
-			{
-				perror("\njstest: error reading");
-				return 1;
-			}
-
+		// calculate current state by emptying event queue every 1ms
+		usleep(1000);
+		while (read(fd, &js, sizeof(struct js_event)) > 0) {
 			switch (js.type & ~JS_EVENT_INIT) {
 			case JS_EVENT_BUTTON:
-				button[js.number] = js.value;
+				buttonsPtr[js.number] = js.value != 0 ? '1' : '0';
 				break;
 			case JS_EVENT_AXIS:
-				axis[js.number] = js.value;
+				for (int i = 0; i < sizeof(int) * 8; ++i) {
+					axesPtr[js.number * 32 + i] = ((js.value & (1 << i)) != 0) ? '1' : '0';
+				}
 				break;
 			}
-			k++;
+
+			if (0 != errno && EAGAIN != errno) {
+				perror("jstest");
+				return errno;
+			}
 		}
 
-		close(fd);
-
-		for (int j = 0; j < 8; ++j)
-			printf("%d", (axes & (1 << j)) != 0);
-
-		for (int j = 0; j < 8; ++j)
-			printf("%d", (buttons & (1 << j)) != 0);
-
-		for (i = 0; i < buttons; ++i)
-		{
-			printf(button[i] != 0 ? "1" : "0");
-		}
-
-		for (i = 0; i < axes; i++)
-		{
-			for (int j = 0; j < sizeof(int) * 8; ++j)
-				printf("%d", (axis[i] & (1 << j)) != 0);
-		}
-
-		//Probably could reduce the bandwidth by outputing the axes values 
-		//directly, but can do it later.
-
-		/*
-		printf("%d|%d|", axes, buttons);
-		for (i = 0; i < buttons; ++i)
-		{
-			printf(button[i] != 0 ? "1" : "0|");
-		}
-		printf("|");
-		for (i = 0; i < axes; i++)
-		{
-			printf("%d|", axis[i]);
-		}*/
-		printf("\n");
+		printf("%s\n", outputBuf);
 	}
 }
